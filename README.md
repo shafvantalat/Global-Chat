@@ -32,7 +32,7 @@ It includes admin moderation tools, temporary group chats, and automatic message
 
 ## ⚡ Demo
 
-🔗 **Live Website:** [https://global-chat.netlify.app](https://global-chat.netlify.app)  
+🔗 **Live Website:** [https://globalchatbyshafvan.com](https://globalchatbyshafvan.netlify.app)  
 
 ---
 
