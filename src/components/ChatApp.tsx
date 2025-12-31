@@ -153,3 +153,4 @@ export const ChatApp: React.FC = () => {
     </div>
   );
 };
+
