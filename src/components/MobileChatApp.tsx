@@ -588,8 +588,6 @@ export const MobileChatApp: React.FC = () => {
                       </span>
                     </div>
                   )}
-                    </div>
-                  )}
                   <p className="text-[15px] leading-relaxed break-words">{message.content}</p>
                   <p className={`text-[10px] mt-1 ${isOwn ? 'text-white/70' : 'text-neutral-500 dark:text-neutral-400'}`}>
                     {formatDistanceToNow(message.created_at)}
