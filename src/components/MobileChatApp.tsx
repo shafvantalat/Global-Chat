@@ -7,7 +7,7 @@ import { formatDistanceToNow } from '../utils/dateUtils';
 import { 
   MessageCircle, Users, Settings, Send, ArrowLeft, 
   Plus, Moon, Sun, LogOut, Hash, Globe, X, 
-  Palette, Ban, Star, ChevronRight
+  Palette, Ban, Star, ChevronRight, ShoppingBag
 } from 'lucide-react';
 import { BannedUsernamesManager } from './BannedUsernamesManager';
 import { HighlightedUsernamesManager } from './HighlightedUsernamesManager';
@@ -37,6 +37,20 @@ interface OnlineUser {
 interface HighlightedUser {
   username: string;
   highlight_color: string;
+}
+
+interface UserTitle {
+  title: string;
+  purchased_at: string;
+}
+
+interface AvailableTitle {
+  name: string;
+  display_name: string;
+  color: string;
+  price: number;
+  description: string;
+  purchasable: boolean;
 }
 
 type MobileView = 'chats' | 'chat' | 'users' | 'settings';
@@ -87,6 +101,10 @@ export const MobileChatApp: React.FC = () => {
   const [showHighlightedManager, setShowHighlightedManager] = useState(false);
   const [highlightedUsers, setHighlightedUsers] = useState<Map<string, string>>(new Map());
   const [adminSecret, setAdminSecret] = useState(() => localStorage.getItem('adminSecret') || '');
+  const [showTitleShop, setShowTitleShop] = useState(false);
+  const [availableTitles, setAvailableTitles] = useState<AvailableTitle[]>([]);
+  const [userTitles, setUserTitles] = useState<UserTitle[]>([]);
+  const [messageTitles, setMessageTitles] = useState<Map<string, string>>(new Map()); // userId -> title
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Load groups
@@ -108,6 +126,24 @@ export const MobileChatApp: React.FC = () => {
     };
     loadHighlightedUsers();
   }, []);
+
+  // Load available titles and user's titles
+  useEffect(() => {
+    const loadTitles = async () => {
+      try {
+        const titles = await safeJsonFetch('/api/titles') as AvailableTitle[];
+        setAvailableTitles(titles);
+        
+        if (user?.id) {
+          const myTitles = await safeJsonFetch(`/api/users/${user.id}/titles`) as UserTitle[];
+          setUserTitles(myTitles);
+        }
+      } catch (err) {
+        console.error('Failed to load titles:', err);
+      }
+    };
+    loadTitles();
+  }, [user?.id]);
 
   // Socket setup
   useEffect(() => {
@@ -226,6 +262,22 @@ export const MobileChatApp: React.FC = () => {
         content: m.content,
         created_at: m.created_at
       })));
+      
+      // Load titles for all users in messages
+      const uniqueUserIds = [...new Set(data.map((m: any) => m.user_id))];
+      const titleMap = new Map<string, string>();
+      await Promise.all(uniqueUserIds.map(async (userId) => {
+        try {
+          const titles = await safeJsonFetch(`/api/users/${userId}/titles`) as UserTitle[];
+          if (titles.length > 0) {
+            // Use the first title
+            titleMap.set(userId, titles[0].title);
+          }
+        } catch (err) {
+          console.error(`Failed to load titles for user ${userId}:`, err);
+        }
+      }));
+      setMessageTitles(titleMap);
     } catch (err) {
       console.error('Failed to load messages:', err);
     }
@@ -290,6 +342,38 @@ export const MobileChatApp: React.FC = () => {
       joinGroup(gid);
     } catch (err) {
       console.error('Failed to create group:', err);
+    }
+  };
+
+  const handlePurchaseTitle = async (titleName: string) => {
+    if (!user) return;
+    
+    // Check if already owned
+    if (userTitles.some(t => t.title === titleName)) {
+      alert('You already own this title!');
+      return;
+    }
+
+    try {
+      const result = await safeJsonFetch('/api/titles/purchase', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userId: user.id, 
+          username: user.username,
+          title: titleName 
+        }),
+      }) as any;
+      
+      if (result.success) {
+        alert(result.message || 'Title purchased successfully!');
+        // Reload user titles
+        const myTitles = await safeJsonFetch(`/api/users/${user.id}/titles`) as UserTitle[];
+        setUserTitles(myTitles);
+        setShowTitleShop(false);
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to purchase title');
     }
   };
 
@@ -444,6 +528,8 @@ export const MobileChatApp: React.FC = () => {
             const isOwn = message.user_id === user?.id;
             const isSystem = message.user_id === 'system';
             const highlightColor = getHighlightColor(message.username);
+            const userTitle = messageTitles.get(message.user_id);
+            const titleConfig = availableTitles.find(t => t.name === userTitle);
 
             if (isSystem) {
               return (
@@ -469,11 +555,39 @@ export const MobileChatApp: React.FC = () => {
                   } : undefined}
                 >
                   {!isOwn && (
-                    <div 
-                      className="text-xs font-semibold mb-1"
-                      style={{ color: highlightColor || THEME_COLORS[themeColor].hex }}
-                    >
-                      {message.username}
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span 
+                        className="text-xs font-semibold"
+                        style={{ color: highlightColor || THEME_COLORS[themeColor].hex }}
+                      >
+                        {message.username}
+                      </span>
+                      {titleConfig && (
+                        <span 
+                          className="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                          style={{ 
+                            backgroundColor: titleConfig.color,
+                            color: 'white'
+                          }}
+                        >
+                          {titleConfig.display_name}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {isOwn && titleConfig && (
+                    <div className="flex items-center justify-end gap-1.5 mb-1">
+                      <span 
+                        className="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                        style={{ 
+                          backgroundColor: titleConfig.color,
+                          color: 'white'
+                        }}
+                      >
+                        {titleConfig.display_name}
+                      </span>
+                    </div>
+                  )}
                     </div>
                   )}
                   <p className="text-[15px] leading-relaxed break-words">{message.content}</p>
@@ -614,6 +728,43 @@ export const MobileChatApp: React.FC = () => {
           <div className={`w-12 h-7 rounded-full p-1 transition-colors ${darkMode ? THEME_COLOR_CLASSES[themeColor] : 'bg-neutral-300'}`}>
             <div className={`w-5 h-5 rounded-full bg-white shadow transition-transform ${darkMode ? 'translate-x-5' : ''}`} />
           </div>
+        </div>
+
+        {/* My Titles */}
+        <div className="p-4 mb-4 rounded-2xl bg-white dark:bg-neutral-900">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center">
+              <ShoppingBag className="w-5 h-5 text-neutral-500 mr-3" />
+              <span className="font-medium text-neutral-900 dark:text-white">My Titles</span>
+            </div>
+            <button
+              onClick={() => setShowTitleShop(true)}
+              className={`text-sm font-medium px-3 py-1.5 rounded-full ${THEME_COLOR_CLASSES[themeColor]} text-white`}
+            >
+              Shop
+            </button>
+          </div>
+          {userTitles.length === 0 ? (
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">No titles yet. Visit the shop!</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {userTitles.map((t, idx) => {
+                const titleConfig = availableTitles.find(at => at.name === t.title);
+                return titleConfig ? (
+                  <span 
+                    key={idx}
+                    className="text-xs font-bold px-2 py-1 rounded"
+                    style={{ 
+                      backgroundColor: titleConfig.color,
+                      color: 'white'
+                    }}
+                  >
+                    {titleConfig.display_name}
+                  </span>
+                ) : null;
+              })}
+            </div>
+          )}
         </div>
 
         {/* Admin Options */}
@@ -773,6 +924,78 @@ export const MobileChatApp: React.FC = () => {
       {showCreateGroup && renderCreateGroupModal()}
       {showBannedManager && <BannedUsernamesManager onClose={() => setShowBannedManager(false)} />}
       {showHighlightedManager && <HighlightedUsernamesManager onClose={() => setShowHighlightedManager(false)} />}
+      {showTitleShop && (
+        <div className="fixed inset-0 bg-black/50 flex items-end z-50 animate-fade-in">
+          <div className="w-full bg-white dark:bg-neutral-900 rounded-t-3xl p-6 animate-slide-up max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold text-neutral-900 dark:text-white">Title Shop</h2>
+              <button
+                onClick={() => setShowTitleShop(false)}
+                className="p-2 rounded-full hover:bg-neutral-100 dark:hover:bg-neutral-800"
+              >
+                <X className="w-6 h-6 text-neutral-900 dark:text-white" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {availableTitles.map((title) => {
+                const owned = userTitles.some(t => t.title === title.name);
+                
+                return (
+                  <div
+                    key={title.name}
+                    className="p-4 rounded-2xl bg-neutral-50 dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700"
+                  >
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span 
+                          className="text-xs font-bold px-2 py-1 rounded"
+                          style={{ 
+                            backgroundColor: title.color,
+                            color: 'white'
+                          }}
+                        >
+                          {title.display_name}
+                        </span>
+                        {owned && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">
+                            Owned
+                          </span>
+                        )}
+                      </div>
+                      {title.purchasable && !owned && (
+                        <span className="text-lg font-bold text-neutral-900 dark:text-white">
+                          ${title.price}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-3">
+                      {title.description}
+                    </p>
+                    {title.purchasable && !owned && (
+                      <button
+                        onClick={() => handlePurchaseTitle(title.name)}
+                        className={`w-full py-2.5 rounded-xl ${THEME_COLOR_CLASSES[themeColor]} text-white font-semibold active:scale-[0.98] transition-transform`}
+                      >
+                        Purchase Now
+                      </button>
+                    )}
+                    {!title.purchasable && (
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400 italic">
+                        Cannot be purchased
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <p className="text-xs text-center text-neutral-500 dark:text-neutral-400 mt-6">
+              Note: This is a demo. No actual payment is processed.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

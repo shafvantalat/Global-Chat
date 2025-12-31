@@ -17,6 +17,20 @@ interface HighlightedUser {
   highlight_color: string;
 }
 
+interface UserTitle {
+  title: string;
+  purchased_at: string;
+}
+
+interface AvailableTitle {
+  name: string;
+  display_name: string;
+  color: string;
+  price: number;
+  description: string;
+  purchasable: boolean;
+}
+
 interface MessageListProps {
   messages: Message[];
 }
@@ -35,12 +49,14 @@ export const MessageList: React.FC<MessageListProps> = ({ messages }) => {
   const { themeColor } = useTheme();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [highlightedUsers, setHighlightedUsers] = useState<Map<string, string>>(new Map());
+  const [availableTitles, setAvailableTitles] = useState<AvailableTitle[]>([]);
+  const [messageTitles, setMessageTitles] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Load highlighted usernames for display
+  // Load highlighted usernames and titles for display
   useEffect(() => {
     const loadHighlightedUsers = async () => {
       try {
@@ -48,6 +64,25 @@ export const MessageList: React.FC<MessageListProps> = ({ messages }) => {
         const map = new Map<string, string>();
         data.forEach(h => map.set(h.username.toLowerCase(), h.highlight_color));
         setHighlightedUsers(map);
+        
+        // Load available titles
+        const titles = await safeJsonFetch('/api/titles') as AvailableTitle[];
+        setAvailableTitles(titles);
+        
+        // Load titles for all users in messages
+        const uniqueUserIds = [...new Set(messages.map(m => m.user_id))];
+        const titleMap = new Map<string, string>();
+        await Promise.all(uniqueUserIds.map(async (userId) => {
+          try {
+            const userTitles = await safeJsonFetch(`/api/users/${userId}/titles`) as UserTitle[];
+            if (userTitles.length > 0) {
+              titleMap.set(userId, userTitles[0].title);
+            }
+          } catch (err) {
+            console.error(`Failed to load titles for user ${userId}:`, err);
+          }
+        }));
+        setMessageTitles(titleMap);
       } catch (err) {
         console.error('Failed to load highlighted users:', err);
       }
@@ -80,6 +115,8 @@ export const MessageList: React.FC<MessageListProps> = ({ messages }) => {
           const isAdminMessage = isAdmin(message.username);
           const messageHighlighted = isHighlighted(message.username) || isAdminMessage;
           const highlightColor = getHighlightColor(message.username);
+          const userTitle = messageTitles.get(message.user_id);
+          const titleConfig = availableTitles.find(t => t.name === userTitle);
 
           if (isSystemMessage) {
             return (
@@ -146,6 +183,30 @@ export const MessageList: React.FC<MessageListProps> = ({ messages }) => {
                     {messageHighlighted && (
                       <span style={{ color: highlightColor || undefined }}>★</span>
                     )}
+                    {titleConfig && (
+                      <span 
+                        className="text-[9px] font-bold px-1.5 py-0.5 rounded ml-1"
+                        style={{ 
+                          backgroundColor: titleConfig.color,
+                          color: 'white'
+                        }}
+                      >
+                        {titleConfig.display_name}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {isOwnMessage && titleConfig && (
+                  <div className="flex justify-end mb-1">
+                    <span 
+                      className="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                      style={{ 
+                        backgroundColor: titleConfig.color,
+                        color: 'white'
+                      }}
+                    >
+                      {titleConfig.display_name}
+                    </span>
                   </div>
                 )}
                 <div className={`break-words text-sm sm:text-base ${!isOwnMessage && messageHighlighted ? 'text-slate-800 dark:text-slate-100' : ''}`}>

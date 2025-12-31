@@ -66,7 +66,8 @@ const inMemoryStore = {
   messages: [],
   bannedUsernames: [],
   highlightedUsernames: [],
-  nextId: { users: 1, groups: 1, members: 1, messages: 1, banned: 1, highlighted: 1 },
+  userTitles: [],
+  nextId: { users: 1, groups: 1, members: 1, messages: 1, banned: 1, highlighted: 1, userTitles: 1 },
 };
 
 // Load banned patterns from MongoDB
@@ -753,6 +754,112 @@ app.post('/api/users/:id/last_seen', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('Failed to update last_seen:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ========== USER TITLES ==========
+
+// Get available titles
+app.get('/api/titles', async (req, res) => {
+  try {
+    const availableTitles = [
+      { name: 'owner', display_name: 'OWNER', color: '#ffd700', price: 0, description: 'Site owner - Cannot be purchased', purchasable: false },
+      { name: 'admin', display_name: 'ADMIN', color: '#ef4444', price: 0, description: 'Administrator - Cannot be purchased', purchasable: false },
+      { name: 'sponsor', display_name: 'SPONSOR', color: '#8b5cf6', price: 500, description: 'Support the platform as a sponsor', purchasable: true },
+      { name: 'vip', display_name: 'VIP', color: '#ec4899', price: 300, description: 'VIP member with exclusive perks', purchasable: true },
+      { name: 'pro', display_name: 'PRO', color: '#3b82f6', price: 200, description: 'Professional member', purchasable: true },
+      { name: 'supporter', display_name: 'SUPPORTER', color: '#10b981', price: 100, description: 'Community supporter', purchasable: true },
+    ];
+    res.json(availableTitles);
+  } catch (err) {
+    console.error('Failed to get titles:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get user's titles
+app.get('/api/users/:userId/titles', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (db) {
+      const userTitles = await db.collection('user_titles').find({ user_id: userId }).toArray();
+      res.json(userTitles.map(t => ({
+        id: t._id.toString(),
+        user_id: t.user_id,
+        title: t.title,
+        purchased_at: t.purchased_at
+      })));
+    } else {
+      const titles = inMemoryStore.userTitles?.filter(t => t.user_id === userId) || [];
+      res.json(titles);
+    }
+  } catch (err) {
+    console.error('Failed to get user titles:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Purchase a title
+app.post('/api/titles/purchase', express.json(), async (req, res) => {
+  try {
+    const { userId, username, title } = req.body;
+    
+    if (!userId || !title) {
+      return res.status(400).json({ error: 'userId and title are required' });
+    }
+
+    // Check if title is purchasable
+    const availableTitles = ['sponsor', 'vip', 'pro', 'supporter'];
+    if (!availableTitles.includes(title)) {
+      return res.status(400).json({ error: 'This title cannot be purchased' });
+    }
+
+    if (db) {
+      // Check if user already has this title
+      const existing = await db.collection('user_titles').findOne({ user_id: userId, title });
+      if (existing) {
+        return res.status(400).json({ error: 'You already own this title' });
+      }
+
+      // Add title (in real app, you'd charge payment here)
+      const result = await db.collection('user_titles').insertOne({
+        user_id: userId,
+        username: username,
+        title,
+        purchased_at: new Date()
+      });
+
+      res.json({ 
+        success: true, 
+        id: result.insertedId.toString(),
+        message: `Successfully purchased ${title.toUpperCase()} title!`
+      });
+    } else {
+      // In-memory fallback
+      if (!inMemoryStore.userTitles) {
+        inMemoryStore.userTitles = [];
+      }
+      const existing = inMemoryStore.userTitles.find(t => t.user_id === userId && t.title === title);
+      if (existing) {
+        return res.status(400).json({ error: 'You already own this title' });
+      }
+      const newTitle = {
+        _id: String(inMemoryStore.nextId.userTitles++),
+        user_id: userId,
+        username: username,
+        title,
+        purchased_at: new Date()
+      };
+      inMemoryStore.userTitles.push(newTitle);
+      res.json({ 
+        success: true, 
+        id: newTitle._id,
+        message: `Successfully purchased ${title.toUpperCase()} title!`
+      });
+    }
+  } catch (err) {
+    console.error('Failed to purchase title:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
