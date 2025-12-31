@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { OnlineUsers } from './OnlineUsers';
 import { Socket } from 'socket.io-client';
 import { Menu, Users as UsersIcon } from 'lucide-react';
+import { safeJsonFetch } from '../utils/fetchHelper';
 
 interface Message {
   id: string;
@@ -42,7 +42,7 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ group, socket, onToggleSideb
 
   useEffect(() => {
     loadMessages();
-    const channel = setupRealtimeSubscription();
+    const cleanupChannel = setupRealtimeSubscription();
 
     if (socket && user) {
       socket.emit('user:join', {
@@ -76,115 +76,117 @@ export const ChatRoom: React.FC<ChatRoomProps> = ({ group, socket, onToggleSideb
         socket.emit('group:leave', { groupId: group.id });
         socket.off('users:update');
         socket.off('user:joined');
-        supabase.removeChannel(channel);
+        if (cleanupChannel && typeof cleanupChannel === 'function') cleanupChannel();
       };
     }
 
     return () => {
-      supabase.removeChannel(channel);
+      if (cleanupChannel && typeof cleanupChannel === 'function') cleanupChannel();
     };
   }, [group.id, socket, user]);
 
   const loadMessages = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('group_id', group.id)
-      .order('created_at', { ascending: true })
-      .limit(50);
-
-    if (!error && data) {
-      setMessages(data);
+    try {
+      const data = await safeJsonFetch(`/api/messages?groupId=${encodeURIComponent(group.id)}`) as any[];
+      setMessages(data.map((m: any) => ({ id: String(m._id || m.id), group_id: m.group_id, user_id: m.user_id, username: m.username, content: m.content, created_at: m.created_at })));
+    } catch (err) {
+      console.error('Failed to load messages:', err);
     }
     setLoading(false);
   };
 
   const setupRealtimeSubscription = () => {
-    const channel = supabase
-      .channel(`messages:${group.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'messages',
-          filter: `group_id=eq.${group.id}`,
-        },
-        (payload) => {
-          console.log('New message received:', payload);
-          const newMessage = payload.new as Message;
-          setMessages((prev) => {
-            const exists = prev.some((m) => m.id === newMessage.id);
-            if (exists) return prev;
-            return [...prev, newMessage];
-          });
-        }
-      )
-      .subscribe((status) => {
-        console.log('Realtime subscription status:', status);
-      });
+    if (!socket) return () => {};
+    const onMessage = (payload: any) => {
+      if (!payload) return;
+      const newMessage: Message = {
+        id: String(payload._id || payload.id || `msg-${Date.now()}`),
+        group_id: payload.group_id || payload.groupId,
+        user_id: payload.user_id || payload.userId,
+        username: payload.username,
+        content: payload.content,
+        created_at: payload.created_at || new Date().toISOString(),
+      };
+      if (newMessage.group_id === group.id) {
+        setMessages((prev) => {
+          const exists = prev.some((m) => m.id === newMessage.id);
+          if (exists) return prev;
+          return [...prev, newMessage];
+        });
+      }
+    };
+    socket.on('message:new', onMessage);
+    socket.on('message:warning', (w: any) => {
+      // show warning as a system message
+      if (w && w.reason) {
+        const sys: Message = { id: `warn-${Date.now()}`, group_id: group.id, user_id: 'system', username: 'System', content: w.reason, created_at: new Date().toISOString() };
+        setMessages((prev) => [...prev, sys]);
+      }
+    });
+    socket.on('message:blocked', (b: any) => {
+      const sys: Message = { id: `block-${Date.now()}`, group_id: group.id, user_id: 'system', username: 'System', content: b.reason || 'You are muted', created_at: new Date().toISOString() };
+      setMessages((prev) => [...prev, sys]);
+    });
 
-    return channel;
+    return () => {
+      socket.off('message:new', onMessage);
+      socket.off('message:warning');
+      socket.off('message:blocked');
+    };
   };
 
   const handleSendMessage = async (content: string) => {
     if (!user) return;
-
-    const newMessage = {
-      group_id: group.id,
-      user_id: user.id,
-      username: user.username,
-      content,
-    };
-
-    const { error } = await supabase
-      .from('messages')
-      .insert(newMessage);
-
-    if (error) {
-      console.error('Error sending message:', error);
-    }
+    const newMessage = { groupId: group.id, userId: user.id, username: user.username, content };
+    if (socket) socket.emit('message:send', newMessage);
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-50 dark:bg-gray-900 h-full overflow-hidden">
-      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
+    <div className="flex-1 flex flex-col bg-slate-100 dark:bg-neutral-950 min-h-0 overflow-hidden">
+      <div className="bg-white dark:bg-neutral-900 border-b border-slate-200 dark:border-neutral-800 px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3 min-w-0 flex-1">
             <button
               onClick={onToggleSidebar}
-              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors lg:hidden"
+              className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors lg:hidden flex-shrink-0"
             >
-              <Menu className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+              <Menu className="w-5 h-5 text-slate-600 dark:text-neutral-400" />
             </button>
             <div className="min-w-0 flex-1">
-              <h2 className="text-lg sm:text-xl font-bold text-gray-800 dark:text-white truncate">{group.name}</h2>
+              <h2 className="text-lg sm:text-xl font-semibold text-slate-800 dark:text-neutral-100 truncate">{group.name}</h2>
               {group.description && (
-                <p className="text-xs sm:text-sm text-gray-600 dark:text-gray-400 mt-0.5 truncate">{group.description}</p>
+                <p className="text-xs sm:text-sm text-slate-500 dark:text-neutral-400 mt-0.5 truncate">{group.description}</p>
               )}
             </div>
           </div>
           <button
             onClick={() => setShowOnlineUsers(!showOnlineUsers)}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors xl:hidden flex items-center space-x-1 flex-shrink-0"
+            className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors flex items-center space-x-1.5 flex-shrink-0 bg-slate-100 dark:bg-neutral-800"
           >
-            <UsersIcon className="w-5 h-5 text-gray-600 dark:text-gray-400" />
-            <span className="text-sm font-medium text-gray-600 dark:text-gray-400">{onlineUsers.length}</span>
+            <UsersIcon className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">{onlineUsers.length}</span>
           </button>
         </div>
       </div>
 
       <div className="flex-1 flex overflow-hidden min-h-0">
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {loading ? (
-            <div className="flex-1 flex items-center justify-center text-gray-500 dark:text-gray-400">
-              Loading messages...
+            <div className="flex-1 flex items-center justify-center text-slate-500 dark:text-neutral-400">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                <span>Loading messages...</span>
+              </div>
             </div>
           ) : (
             <MessageList messages={messages} />
           )}
-          <MessageInput onSendMessage={handleSendMessage} disabled={loading} />
+
+          {/* Ensure the input area doesn't get pushed off-screen by the message list */}
+          <div className="flex-shrink-0">
+            <MessageInput onSendMessage={handleSendMessage} disabled={loading || !user} />
+          </div>
         </div>
 
         <div className={`${showOnlineUsers ? 'block' : 'hidden'} xl:block`}>

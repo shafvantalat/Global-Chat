@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# Quick Backend Deployment Script for Render
+
+echo "🚀 Deploying Backend to Render..."
+echo ""
+echo "📋 Required Information:"
+echo "   - MongoDB URI: $MONGO_URI"
+echo "   - Admin Secret: $ADMIN_API_SECRET"
+echo ""
+echo "Follow these steps:"
+echo "1. Go to https://render.com"
+echo "2. Click 'New +' → 'Web Service'"
+echo "3. Connect this GitHub repo"
+echo "4. Settings:"
+echo "   - Runtime: Node"
+echo "   - Build Command: npm install"
+echo "   - Start Command: node server.js"
+echo "5. Add Environment Variables:"
+echo "   MONGO_URI=$MONGO_URI"
+echo "   ADMIN_API_SECRET=$ADMIN_API_SECRET"
+echo "6. Deploy!"
+echo ""
+echo "After deployment, update Netlify:"
+echo "   Add: VITE_BACKEND_URL=<your-render-url>"
+echo ""
