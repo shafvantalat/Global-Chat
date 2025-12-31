@@ -1,7 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = 'http://localhost:3001';
+const SOCKET_URL = import.meta.env.VITE_BACKEND_URL || 
+  (typeof window !== 'undefined' 
+    ? `${window.location.protocol}//${window.location.hostname}:3001`
+    : 'http://localhost:3001');
 
 export const useSocket = () => {
   const socketRef = useRef<Socket | null>(null);

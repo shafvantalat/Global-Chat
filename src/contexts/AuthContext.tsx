@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { safeJsonFetch } from '../utils/fetchHelper';
 
 interface User {
   id: string;
   username: string;
   isAdmin: boolean;
+  isHighlighted?: boolean;
+  highlightColor?: string | null;
 }
 
 interface AuthContextType {
@@ -31,10 +33,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const updateLastSeen = async (userId: string) => {
-    await supabase
-      .from('users')
-      .update({ last_seen: new Date().toISOString() })
-      .eq('id', userId);
+    try {
+      await safeJsonFetch(`/api/users/${userId}/last_seen`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      console.error('Failed to update last seen:', err);
+    }
   };
 
   const hashPassword = async (password: string): Promise<string> => {
@@ -51,112 +57,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Username cannot be empty');
     }
 
-    const trimmedUsername = username.trim();
-    const isAdminLogin = trimmedUsername.toLowerCase() === 'admin';
+    // Force all usernames to lowercase
+    const trimmedUsername = username.trim().toLowerCase();
+    const isAdminLogin = trimmedUsername === 'admin';
 
     if (isAdminLogin && !password) {
       throw new Error('Admin password is required');
     }
 
-    const trimmedUsernameLower = trimmedUsername.toLowerCase();
+    // Use server-side login endpoint which persists users in MongoDB
+    try {
+      const result = await safeJsonFetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: trimmedUsername, password }),
+      }) as any;
 
-    const { data: bannedCheck } = await supabase
-      .from('banned_usernames')
-      .select('username, reason')
-      .eq('username', trimmedUsernameLower)
-      .maybeSingle();
-
-    if (bannedCheck && !isAdminLogin) {
-      throw new Error('This username is not allowed. Please choose a different one.');
-    }
-
-    const { data: existingUser } = await supabase
-      .from('users')
-      .select('*')
-      .eq('username', trimmedUsername)
-      .maybeSingle();
-
-    let userData: User;
-
-    if (existingUser) {
-      if (existingUser.is_admin && password) {
-        const passwordHash = await hashPassword(password);
-        if (existingUser.admin_password_hash !== passwordHash) {
-          throw new Error('Invalid admin password');
-        }
-      } else if (existingUser.is_admin && !password) {
-        throw new Error('Admin password is required');
-      }
-
-      userData = {
-        id: existingUser.id,
-        username: existingUser.username,
-        isAdmin: existingUser.is_admin || false,
+      const userData: User = {
+        id: result.id,
+        username: result.username,
+        isAdmin: !!result.isAdmin,
+        isHighlighted: !!result.isHighlighted,
+        highlightColor: result.highlightColor || null,
       };
-      await updateLastSeen(existingUser.id);
-    } else {
-      if (isAdminLogin && password) {
-        const passwordHash = await hashPassword(password);
-        const { data: newUser, error } = await supabase
-          .from('users')
-          .insert({
-            username: trimmedUsername,
-            is_admin: true,
-            admin_password_hash: passwordHash,
-          })
-          .select()
-          .single();
 
-        if (error) throw error;
-
-        userData = {
-          id: newUser.id,
-          username: newUser.username,
-          isAdmin: true,
-        };
-      } else {
-        const { data: newUser, error } = await supabase
-          .from('users')
-          .insert({ username: trimmedUsername })
-          .select()
-          .single();
-
-        if (error) throw error;
-
-        userData = {
-          id: newUser.id,
-          username: newUser.username,
-          isAdmin: false,
-        };
-      }
-
-      const { data: globalGroup } = await supabase
-        .from('groups')
-        .select('id')
-        .eq('is_global', true)
-        .single();
-
-      if (globalGroup) {
-        await supabase.from('group_members').insert({
-          group_id: globalGroup.id,
-          user_id: userData.id,
-          is_online: true,
-        });
-      }
+      localStorage.setItem('chat_user', JSON.stringify(userData));
+      setUser(userData);
+      try { await updateLastSeen(userData.id); } catch (_) {}
+    } catch (err) {
+      throw err instanceof Error ? err : new Error('Login failed');
     }
-
-    localStorage.setItem('chat_user', JSON.stringify(userData));
-    setUser(userData);
   };
 
   const logout = async () => {
-    if (user) {
-      await supabase
-        .from('group_members')
-        .update({ is_online: false })
-        .eq('user_id', user.id);
-    }
-
+    // For now just clear local state. Server group_members will be updated on disconnect via socket.
     localStorage.removeItem('chat_user');
     setUser(null);
   };

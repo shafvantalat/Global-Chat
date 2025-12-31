@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { useSocket } from '../hooks/useSocket';
 import { ChatSidebar } from './ChatSidebar';
 import { ChatRoom } from './ChatRoom';
+import { safeJsonFetch } from '../utils/fetchHelper';
 
 interface Group {
   id: string;
@@ -15,94 +16,74 @@ interface Group {
 
 export const ChatApp: React.FC = () => {
   const { user } = useAuth();
+  const { darkMode, toggleDarkMode } = useTheme();
   const socket = useSocket();
   const [groups, setGroups] = useState<Group[]>([]);
   const [activeGroup, setActiveGroup] = useState<Group | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [darkMode, setDarkMode] = useState(() => {
-    const saved = localStorage.getItem('darkMode');
-    return saved ? JSON.parse(saved) : false;
-  });
-
-  useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-    localStorage.setItem('darkMode', JSON.stringify(darkMode));
-  }, [darkMode]);
 
   useEffect(() => {
     loadGroups();
-    setupRealtimeSubscription();
-  }, []);
+    const cleanup = setupRealtimeSubscription();
+    return cleanup;
+  }, [socket]);
 
   const loadGroups = async () => {
-    const { data, error } = await supabase
-      .from('groups')
-      .select('*')
-      .order('is_global', { ascending: false })
-      .order('created_at', { ascending: true });
-
-    if (!error && data) {
-      setGroups(data);
-      if (data.length > 0 && !activeGroup) {
-        const globalGroup = data.find((g) => g.is_global) || data[0];
-        setActiveGroup(globalGroup);
-        joinGroup(globalGroup.id);
+    try {
+      const data = await safeJsonFetch('/api/groups') as any[];
+      const mappedGroups = data.map((g: any) => ({ ...g, id: String(g._id || g.id) }));
+      setGroups(mappedGroups);
+      if (mappedGroups.length > 0 && !activeGroup) {
+        // Always select the global group first
+        const globalGroup = mappedGroups.find((g: any) => g.is_global) || mappedGroups[0];
+        const gid = String(globalGroup._id || globalGroup.id);
+        setActiveGroup({ ...globalGroup, id: gid });
+        joinGroup(gid);
       }
+    } catch (err) {
+      console.error('Failed to load groups:', err);
     }
   };
 
   const setupRealtimeSubscription = () => {
-    const channel = supabase
-      .channel('groups')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'groups',
-        },
-        (payload) => {
-          const newGroup = payload.new as Group;
-          setGroups((prev) => [...prev, newGroup]);
-        }
-      )
-      .subscribe();
-
+    if (!socket) return () => {};
+    
+    const onCreated = (group: any) => {
+      const g = { ...group, id: String(group._id || group.id) };
+      setGroups((prev) => [...prev, g]);
+    };
+    
+    const onDeleted = ({ groupId }: { groupId: string }) => {
+      setGroups((prev) => prev.filter(g => g.id !== groupId));
+      // If the deleted group was active, switch to global
+      if (activeGroup?.id === groupId) {
+        setActiveGroup(null);
+        loadGroups();
+      }
+    };
+    
+    socket.on('group:created', onCreated);
+    socket.on('group:deleted', onDeleted);
+    
     return () => {
-      supabase.removeChannel(channel);
+      socket.off('group:created', onCreated);
+      socket.off('group:deleted', onDeleted);
     };
   };
 
   const joinGroup = async (groupId: string) => {
     if (!user) return;
-
-    const { data: existingMembership } = await supabase
-      .from('group_members')
-      .select('*')
-      .eq('group_id', groupId)
-      .eq('user_id', user.id)
-      .maybeSingle();
-
-    if (!existingMembership) {
-      await supabase.from('group_members').insert({
-        group_id: groupId,
-        user_id: user.id,
-        is_online: true,
+    try {
+      await safeJsonFetch('/api/group_members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_id: groupId, user_id: user.id, is_online: true }),
       });
-    } else {
-      await supabase
-        .from('group_members')
-        .update({ is_online: true })
-        .eq('id', existingMembership.id);
+    } catch (err) {
+      console.error('Failed to upsert group_member:', err);
     }
 
-    if (socket) {
-      socket.emit('group:join', { groupId });
-    }
+    if (socket) socket.emit('group:join', { groupId });
   };
 
   const handleGroupSelect = (groupId: string) => {
@@ -119,42 +100,40 @@ export const ChatApp: React.FC = () => {
 
   const handleCreateGroup = async (name: string, description: string) => {
     if (!user) return;
+    try {
+      const data = await safeJsonFetch('/api/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description, created_by: user.id }),
+      }) as any;
+      const gid = String(data._id || data.id);
+      setActiveGroup({ ...data, id: gid });
+      await joinGroup(gid);
+    } catch (err) {
+      console.error('Failed to create group:', err);
+    }
+  };
 
-    const { data, error } = await supabase
-      .from('groups')
-      .insert({
-        name,
-        description,
-        created_by: user.id,
-      })
-      .select()
-      .single();
-
-    if (!error && data) {
-      await supabase.from('group_members').insert({
-        group_id: data.id,
-        user_id: user.id,
-        is_online: true,
-      });
-
-      setActiveGroup(data);
-      if (socket) {
-        socket.emit('group:join', { groupId: data.id });
+  const handleDeleteGroup = (groupId: string) => {
+    setGroups((prev) => prev.filter(g => g.id !== groupId));
+    if (activeGroup?.id === groupId) {
+      // Switch to global group
+      const globalGroup = groups.find(g => g.is_global);
+      if (globalGroup) {
+        setActiveGroup(globalGroup);
+        joinGroup(globalGroup.id);
       }
     }
   };
 
-  const toggleDarkMode = () => {
-    setDarkMode(!darkMode);
-  };
-
   return (
-    <div className="h-screen flex bg-gray-100 dark:bg-gray-900 overflow-hidden">
+    <div className="h-screen-safe flex bg-slate-100 dark:bg-neutral-950 overflow-hidden">
       <ChatSidebar
         groups={groups}
         activeGroupId={activeGroup?.id || null}
         onGroupSelect={handleGroupSelect}
         onCreateGroup={handleCreateGroup}
+        onDeleteGroup={handleDeleteGroup}
         darkMode={darkMode}
         toggleDarkMode={toggleDarkMode}
         isOpen={sidebarOpen}
@@ -167,10 +146,11 @@ export const ChatApp: React.FC = () => {
           onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         />
       ) : (
-        <div className="flex-1 flex items-center justify-center text-gray-500 dark:text-gray-400">
+        <div className="flex-1 flex items-center justify-center text-slate-500 dark:text-neutral-400">
           Select a group to start chatting
         </div>
       )}
     </div>
   );
 };
+
